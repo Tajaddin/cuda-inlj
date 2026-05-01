@@ -1,0 +1,19 @@
+# Compiled object files
+*.o
+
+# Executables
+*.exe
+
+# Build directories
+build/
+
+# CUDA compiled files
+*.ptx
+*.cubin
+*.fatbin
+
+# Other common build artifacts
+*.d
+*.a
+*.so
+*.out
