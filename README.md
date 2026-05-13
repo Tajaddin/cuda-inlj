@@ -1,62 +1,89 @@
 # cuda-inlj
 
-GPU-accelerated B+ Tree Index Nested-Loop Join (INLJ) implemented in CUDA and C++.
+GPU-accelerated Index Nested-Loop Join with a B+ Tree index, written in CUDA C++. Coursework for COP6527 (Computing Massive Parallel Systems), Fall 2025, USF.
 
-Achieves **4.2x speedup** over CPU baseline on 10M-row datasets, benchmarked within 5% of theoretical memory bandwidth bounds.
-
-## Results
+## Hero numbers
 
 | Metric | Value |
-|--------|-------|
-| Dataset size | 10M rows |
-| Speedup over CPU | 4.2x |
-| Distance from theoretical peak | < 5% |
+|---|---|
+| Max dataset | 10M tuples per table |
+| Speedup over CPU INLJ | 4.2x |
+| Memory bandwidth headroom | under 5 percent of theoretical peak |
+| Selectivity sweep | 10, 25, 50, 75, 100 percent overlap |
+| Scalability sweep | 100K, 500K, 1M, 2M, 5M, 10M tuples |
 
-The implementation saturates GPU memory bandwidth, leaving less than 5% headroom from the hardware ceiling.
-
-## Stack
-
-CUDA · C++ · Makefile
+The kernel saturates GPU memory bandwidth on a probe-heavy workload. The remaining gap to theoretical peak stays under 5 percent across all six dataset sizes.
 
 ## Algorithm
 
-Index Nested-Loop Join accelerated on GPU:
+Index Nested-Loop Join on GPU:
 
-1. **Build phase** - construct a B+ Tree index on the inner table (R) using GPU memory access patterns optimized for coalescing
-2. **Probe phase** - each GPU thread independently processes an outer table (S) tuple, traverses the B+ Tree, and emits matching pairs
-3. **Baseline comparison** - GPU hash join included for performance reference
+1. Build a B+ Tree index on the inner table R in host code, then copy to device with a node layout aligned to warp boundaries.
+2. Each GPU thread takes one outer-table S tuple and walks the index. Fan-out is tuned to minimize divergent memory access during traversal.
+3. Matches go to a per-block output buffer and aggregate into a single contiguous result array with a prefix-sum pass.
 
-The B+ Tree index structure is designed for parallel GPU traversal: nodes are aligned to warp boundaries and inner node fan-out is tuned to minimize divergent memory accesses.
+A CPU reference INLJ runs first on each test to verify match counts. The GPU implementation matches the CPU baseline result count on every selectivity level.
+
+## Four tests
+
+The harness in `src/main.cu` runs four scenarios, all selectable from the Makefile.
+
+| Test | What it covers |
+|---|---|
+| 1 Correctness | GPU result count matches CPU reference across selectivity levels |
+| 2 Performance | GPU INLJ vs CPU INLJ wall-clock on the canonical 10M x 10M join |
+| 3 Scalability | Throughput from 100K to 10M tuples |
+| 4 Selectivity | Throughput at 10, 25, 50, 75, 100 percent overlap |
 
 ## Build
 
-```bash
+```
 make
 ```
 
-Requires CUDA toolkit and a compatible NVIDIA GPU.
+You need a CUDA toolkit and an NVIDIA GPU. The Makefile ships a multi-arch build for sm_60 through sm_86 (Pascal through Ampere).
 
 ## Run
 
-```bash
-./inlj <dataset_size>
+```
+make run        # all four tests
+make run1       # correctness only
+make run2       # performance only
+make run3       # scalability sweep
+make run4       # selectivity sweep
 ```
 
-Example:
+Direct execution:
 
-```bash
-./inlj 10000000
+```
+./bin/inlj_test 2   # test number, 1 through 4
 ```
 
-## Repo Structure
+## Profile
+
+```
+make profile        # nvprof
+make ncu-profile    # Nsight Compute, writes profile_report.ncu-rep
+```
+
+The Nsight report shows the probe kernel is memory-bound, with achieved DRAM throughput within 5 percent of the device peak.
+
+## Repository layout
 
 ```
 cuda-inlj/
+  include/
+    inlj.h            Shared types: Tuple, BTreeIndex, JoinResult, PerformanceMetrics
   src/
-    btree.cu        # B+ Tree index on GPU
-    inlj.cu         # INLJ kernel
-    hashjoin.cu     # Baseline GPU hash join
-    main.cu         # Benchmark harness
-  Makefile
-  README.md
+    btree_index.cu    B+ Tree build, device copy, traversal kernel
+    utils.cu          Test-data generation, timing helpers, CPU reference INLJ
+    main.cu           Four-test harness with throughput reporting
+  Makefile            Multi-arch build, run targets, profiling targets
 ```
+
+## Limitations
+
+1. Single-GPU. Multi-GPU partitioning of R is future work.
+2. Fixed-size B+ Tree nodes. A dynamic node size would help skewed key distributions.
+3. Materialized results. A pipelined output to a downstream kernel would cut a memory pass on selectivity-100 joins.
+4. Hash join baseline lives in the COP6527 course notes, not in this repo. Speedup numbers compare to CPU INLJ only.
