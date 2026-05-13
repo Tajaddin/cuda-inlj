@@ -26,7 +26,7 @@ A CPU reference INLJ runs first on each test to verify match counts. The GPU imp
 
 ## Four tests
 
-The harness in `src/main.cu` runs four scenarios, all selectable from the Makefile.
+The driver in `src/main.cu` runs four scenarios, all selectable from the Makefile.
 
 | Test | What it covers |
 |---|---|
@@ -77,7 +77,7 @@ cuda-inlj/
   src/
     btree_index.cu    B+ Tree build, device copy, traversal kernel
     utils.cu          Test-data generation, timing helpers, CPU reference INLJ
-    main.cu           Four-test harness with throughput reporting
+    main.cu           Four-test driver with throughput reporting
   Makefile            Multi-arch build, run targets, profiling targets
 ```
 
