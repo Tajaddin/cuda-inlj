@@ -166,15 +166,34 @@ int build_btree_index(const Tuple* tuples, uint32_t num_tuples, BTreeIndex* inde
     uint32_t* current_level = leaf_indices;
     uint32_t current_level_size = num_leaves;
     uint32_t height = 1;
-    
+
+    // Smallest key in each node's subtree. A separator must be the minimum of
+    // the child's whole subtree; an internal child's keys[0] is not (it is the
+    // separator between that child's first two subtrees), which made searches
+    // miss keys in trees of height 3 or more.
+    uint32_t* current_min = (uint32_t*)malloc(num_leaves * sizeof(uint32_t));
+    if (!current_min) {
+        free(leaf_indices);
+        free(node_arr.nodes);
+        fprintf(stderr, "Failed to allocate subtree minimums\n");
+        return -1;
+    }
+    for (uint32_t i = 0; i < num_leaves; i++) {
+        current_min[i] = node_arr.nodes[leaf_indices[i]].keys[0];
+    }
+
     while (current_level_size > 1) {
         uint32_t keys_per_internal = BTREE_MAX_KEYS;
         uint32_t children_per_internal = BTREE_ORDER;
         uint32_t num_internal = (current_level_size + children_per_internal - 1) / children_per_internal;
         
         uint32_t* next_level = (uint32_t*)malloc(num_internal * sizeof(uint32_t));
-        if (!next_level) {
+        uint32_t* next_min = (uint32_t*)malloc(num_internal * sizeof(uint32_t));
+        if (!next_level || !next_min) {
+            free(next_level);
+            free(next_min);
             free(current_level);
+            free(current_min);
             free(node_arr.nodes);
             fprintf(stderr, "Failed to allocate next level indices\n");
             return -1;
@@ -185,39 +204,44 @@ int build_btree_index(const Tuple* tuples, uint32_t num_tuples, BTreeIndex* inde
             uint32_t internal_idx = allocate_node(&node_arr);
             if (internal_idx == INVALID_INDEX) {
                 free(current_level);
+                free(current_min);
                 free(next_level);
+                free(next_min);
                 free(node_arr.nodes);
                 fprintf(stderr, "Failed to allocate internal node\n");
                 return -1;
             }
-            
+
             next_level[i] = internal_idx;
+            next_min[i] = current_min[child_idx];
             BTreeNode* internal = &node_arr.nodes[internal_idx];
             internal->is_leaf = 0;
-            
+
             // Add children and separator keys
             uint32_t num_children = 0;
             while (child_idx < current_level_size && num_children < children_per_internal) {
                 internal->values[num_children] = current_level[child_idx];
-                
-                // Add separator key (first key of child, except for first child)
+
+                // Separator = smallest key in the child's subtree (all but the first child)
                 if (num_children > 0) {
-                    BTreeNode* child = &node_arr.nodes[current_level[child_idx]];
-                    internal->keys[num_children - 1] = child->keys[0];
+                    internal->keys[num_children - 1] = current_min[child_idx];
                 }
-                
+
                 num_children++;
                 child_idx++;
             }
-            
+
             internal->num_keys = (num_children > 0) ? num_children - 1 : 0;
         }
-        
+
         free(current_level);
+        free(current_min);
         current_level = next_level;
+        current_min = next_min;
         current_level_size = num_internal;
         height++;
     }
+    free(current_min);
     
     // ========================================================================
     // Step 3: Finalize index structure

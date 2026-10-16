@@ -7,12 +7,13 @@ GPU-accelerated Index Nested-Loop Join with a B+ Tree index, written in CUDA C++
 | Metric | Value |
 |---|---|
 | Max dataset | 10M tuples per table |
-| Speedup over CPU INLJ | 4.2x |
-| Memory bandwidth headroom | under 5 percent of theoretical peak |
+| Join kernel vs GPU hash-join kernel | 4.4x faster (0.54 ms vs 2.34 ms, 1M x 1M, 50% overlap, RTX 4060) |
+| End to end, including the host-side index build | hash join is ~20x faster (10M: 1,163 ms vs 59 ms) |
+| Correctness | GPU match count equals the CPU reference |
 | Selectivity sweep | 10, 25, 50, 75, 100 percent overlap |
 | Scalability sweep | 100K, 500K, 1M, 2M, 5M, 10M tuples |
 
-The kernel saturates GPU memory bandwidth on a probe-heavy workload. The remaining gap to theoretical peak stays under 5 percent across all six dataset sizes.
+The index probe itself is fast: once the B+ Tree is on the device, the join kernel beats a GPU hash-join kernel by about 4x. End to end it loses, because the tree is bulk-loaded on the CPU and copied over, while the hash table is built on the GPU. The INLJ wins only when the index is built once and probed many times.
 
 ## Algorithm
 
@@ -31,7 +32,7 @@ The driver in `src/main.cu` runs four scenarios, all selectable from the Makefil
 | Test | What it covers |
 |---|---|
 | 1 Correctness | GPU result count matches CPU reference across selectivity levels |
-| 2 Performance | GPU INLJ vs CPU INLJ wall-clock on the canonical 10M x 10M join |
+| 2 Performance | GPU INLJ vs GPU hash join (kernel and total time) on 1M x 1M |
 | 3 Scalability | Throughput from 100K to 10M tuples |
 | 4 Selectivity | Throughput at 10, 25, 50, 75, 100 percent overlap |
 
@@ -86,4 +87,4 @@ cuda-inlj/
 1. Single-GPU. Multi-GPU partitioning of R is future work.
 2. Fixed-size B+ Tree nodes. A dynamic node size would help skewed key distributions.
 3. Materialized results. A pipelined output to a downstream kernel would cut a memory pass on selectivity-100 joins.
-4. Hash join baseline lives in the COP6527 course notes, not in this repo. Speedup numbers compare to CPU INLJ only.
+4. The hash-join baseline is in `src/btree_index.cu` (`build_hash_table_kernel`, `hash_join_probe_kernel`); the CPU reference only verifies match counts and is not timed.
