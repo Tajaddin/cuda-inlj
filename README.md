@@ -67,7 +67,7 @@ make profile        # nvprof
 make ncu-profile    # Nsight Compute, writes profile_report.ncu-rep
 ```
 
-The Nsight report shows the probe kernel is memory-bound, with achieved DRAM throughput within 5 percent of the device peak.
+`make ncu-profile` writes the Nsight Compute report for the probe kernel; no profile report is committed, so treat any bandwidth figure as something to measure on your own GPU.
 
 ## Repository layout
 
