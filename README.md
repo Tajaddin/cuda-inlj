@@ -61,7 +61,7 @@ make
 make test       # unit tests
 ```
 
-You need a CUDA toolkit and an NVIDIA GPU. The Makefile builds machine code for sm_60 through sm_86 (Pascal through Ampere) plus compute_86 PTX, which newer GPUs JIT-compile. CUDA 13 dropped sm_60 and sm_70, so there pass your own architecture:
+You need a CUDA toolkit and an NVIDIA GPU. The Makefile builds machine code for sm_75, sm_80 and sm_86, plus sm_60 and sm_70 when nvcc is older than CUDA 13, which dropped them, and compute_86 PTX. The sm_86 code also runs on the other 8.x GPUs, such as the RTX 40 series (sm_89); GPUs of compute capability 9.0 and newer JIT-compile the PTX. To build for one GPU only:
 
 ```
 make CUDA_ARCH="-gencode arch=compute_89,code=sm_89"

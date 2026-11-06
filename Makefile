@@ -18,11 +18,16 @@ CXX = g++
 #   - sm_86: Ampere (RTX 30xx mobile)
 #   - sm_89: Ada Lovelace (RTX 40xx)
 #   - sm_90: Hopper (H100)
-# The compute_86 PTX lets newer GPUs JIT-compile the kernels; without it a
-# launch on them fails. CUDA 13 dropped sm_60 and sm_70, so build there with
-# e.g. make CUDA_ARCH="-gencode arch=compute_89,code=sm_89"
-CUDA_ARCH = -gencode arch=compute_60,code=sm_60 \
-            -gencode arch=compute_70,code=sm_70 \
+# The sm_86 machine code also runs on the other 8.x GPUs, such as Ada (sm_89);
+# GPUs of compute capability 9.0 and newer (Hopper, Blackwell) JIT-compile the
+# compute_86 PTX. CUDA 13 dropped sm_60 and sm_70, so only an older nvcc builds
+# them. To build for one GPU: make CUDA_ARCH="-gencode arch=compute_89,code=sm_89"
+NVCC_MAJOR := $(shell $(NVCC) --version 2>/dev/null | sed -n 's/.*release \([0-9]*\)\..*/\1/p')
+ifeq ($(shell [ "$(NVCC_MAJOR)" -lt 13 ] 2>/dev/null && echo yes),yes)
+PRE_TURING_ARCH = -gencode arch=compute_60,code=sm_60 \
+                  -gencode arch=compute_70,code=sm_70
+endif
+CUDA_ARCH = $(PRE_TURING_ARCH) \
             -gencode arch=compute_75,code=sm_75 \
             -gencode arch=compute_80,code=sm_80 \
             -gencode arch=compute_86,code=sm_86 \
