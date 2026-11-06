@@ -100,6 +100,53 @@ static void test_verification_rejects_wrong_missing_and_duplicate_pairs() {
 }
 
 /**
+ * Probes that miss must be spread over R's key range. Keys above every R key
+ * all follow the rightmost root-to-leaf path, which stays cached and keeps
+ * warps uniform, so they flatter the B+ tree against the hash join.
+ */
+static void test_misses_spread_across_the_key_range() {
+    printf("misses spread across the key range\n");
+    const uint32_t n = 100000;
+    Tuple* R = (Tuple*)malloc(n * sizeof(Tuple));
+    Tuple* S = (Tuple*)malloc(n * sizeof(Tuple));
+    generate_join_test_data(R, n, S, n, 50.0f, 7);
+
+    uint32_t max_key = 0, max_r_key = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        if (R[i].key > max_r_key) max_r_key = R[i].key;
+        if (R[i].key > max_key) max_key = R[i].key;
+        if (S[i].key > max_key) max_key = S[i].key;
+    }
+    uint8_t* in_r = (uint8_t*)calloc(max_key + 1, 1);
+    uint8_t* in_s = (uint8_t*)calloc(max_key + 1, 1);
+    for (uint32_t i = 0; i < n; i++) in_r[R[i].key] = 1;
+
+    uint32_t hits = 0, misses = 0, misses_inside = 0, misses_low_half = 0, repeated = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t key = S[i].key;
+        if (in_s[key]) repeated++;
+        in_s[key] = 1;
+        if (in_r[key]) {
+            hits++;
+        } else {
+            misses++;
+            if (key < max_r_key) misses_inside++;
+            if (key < max_r_key / 2) misses_low_half++;
+        }
+    }
+    EXPECT(repeated == 0, "S keys should be unique");
+    EXPECT(hits == n / 2, "half of S should match");
+    EXPECT(misses_inside >= misses * 0.99, "misses should fall inside R's key range");
+    EXPECT(misses_low_half > misses * 0.4 && misses_low_half < misses * 0.6,
+           "about half of the misses should fall in the lower half of the range");
+
+    free(in_r);
+    free(in_s);
+    free(R);
+    free(S);
+}
+
+/**
  * Both GPU joins must return exactly the expected pairs for trees of height
  * 1, 3 and 4, and when none, half or all of S matches.
  */
@@ -149,6 +196,7 @@ int main() {
 
     test_failed_join_frees_device_memory();
     test_verification_rejects_wrong_missing_and_duplicate_pairs();
+    test_misses_spread_across_the_key_range();
     test_gpu_joins_return_exact_pairs();
 
     if (failures) {

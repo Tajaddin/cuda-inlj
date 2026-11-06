@@ -75,6 +75,10 @@ void generate_test_data(Tuple* tuples, uint32_t num_tuples, uint32_t seed) {
  * @brief Generate test data with controlled overlap for join testing
  * * Creates two tables where a specified percentage of keys match.
  * This allows testing join performance at different selectivities.
+ * R gets the even keys 0, 2, ..., 2*(num_R-1); the S keys that miss are
+ * distinct odd keys from the same range, so a missed probe walks a random
+ * root-to-leaf path like a hit does. (Misses above every R key would all
+ * follow the rightmost path, which stays cached.)
  * * @param R Array for table R tuples (inner/indexed table)
  * @param num_R Number of tuples in R
  * @param S Array for table S tuples (outer table)
@@ -92,7 +96,7 @@ void generate_join_test_data(
     
     uint32_t state = seed;
     
-    // Generate R with unique keys in range [0, num_R-1]
+    // Generate R with unique even keys in range [0, 2*num_R-2]
     uint32_t* r_keys = (uint32_t*)malloc(num_R * sizeof(uint32_t));
     if (!r_keys) {
         fprintf(stderr, "Failed to allocate memory for R keys\n");
@@ -106,7 +110,7 @@ void generate_join_test_data(
     
     for (uint32_t i = 0; i < num_R; i++) {
         R[i].id = i;
-        R[i].key = r_keys[i];
+        R[i].key = 2 * r_keys[i];
     }
     
     // Generate S with controlled overlap
@@ -138,14 +142,28 @@ void generate_join_test_data(
     for (uint32_t i = 0; i < num_matching; i++) {
         // Pick a random key from R
         uint32_t r_idx = r_key_indices[i % num_R];
-        s_keys[i] = r_keys[r_idx];
+        s_keys[i] = 2 * r_keys[r_idx];
     }
     
-    // Then, add non-matching keys (keys not in R)
-    uint32_t non_match_key = num_R; // Start from keys outside R's range
-    for (uint32_t i = num_matching; i < num_S; i++) {
-        s_keys[i] = non_match_key++;
+    // Then, add non-matching keys: distinct odd keys drawn from R's range
+    // (beyond it only if S needs more misses than R has gaps)
+    uint32_t num_odd = num_non_matching > num_R ? num_non_matching : num_R;
+    uint32_t* odd_slots = (uint32_t*)malloc(num_odd * sizeof(uint32_t));
+    if (!odd_slots) {
+        free(r_keys);
+        free(s_keys);
+        free(r_key_indices);
+        fprintf(stderr, "Failed to allocate memory for non-matching keys\n");
+        return;
     }
+    for (uint32_t i = 0; i < num_odd; i++) {
+        odd_slots[i] = i;
+    }
+    shuffle_array(odd_slots, num_odd, seed + 3);
+    for (uint32_t i = 0; i < num_non_matching; i++) {
+        s_keys[num_matching + i] = 2 * odd_slots[i] + 1;
+    }
+    free(odd_slots);
     
     // Shuffle S keys
     shuffle_array(s_keys, num_S, seed + 2);
