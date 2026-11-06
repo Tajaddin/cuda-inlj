@@ -7,7 +7,7 @@
  * * This program demonstrates and benchmarks the GPU-based Index Nested-Loop
  * Join implementation compared against a baseline hash join algorithm.
  * * Features:
- * - Correctness verification against CPU implementation
+ * - Pair-level verification of every join against a CPU reference
  * - Performance comparison between INLJ and Hash Join
  * - Scalability testing with various data sizes
  * - Selectivity testing with different join overlap percentages
@@ -42,13 +42,51 @@ static const float SELECTIVITY_PERCENTAGES[] = {
 static const int NUM_SELECTIVITIES = sizeof(SELECTIVITY_PERCENTAGES) / sizeof(SELECTIVITY_PERCENTAGES[0]);
 
 // ============================================================================
+// Helpers
+// ============================================================================
+
+/**
+ * @brief Run one GPU join and check its (r_id, s_id) pairs
+ * * Runs the INLJ when index is given, the hash join otherwise, then compares
+ * the returned pairs with the CPU reference join.
+ * @return 0 if the join ran and returned exactly the expected pairs, -1 otherwise
+ */
+static int run_join(
+    const Tuple* R, const Tuple* S, uint32_t num_tuples,
+    const BTreeIndex* index,
+    JoinResult* results, uint32_t max_results,
+    PerformanceMetrics* metrics
+) {
+    const char* name = index ? "GPU INLJ" : "GPU hash join";
+    int count = index
+        ? gpu_index_nested_loop_join(R, num_tuples, S, num_tuples, index,
+                                     results, max_results, metrics)
+        : gpu_hash_join_baseline(R, num_tuples, S, num_tuples,
+                                 results, max_results, metrics);
+    if (count < 0) {
+        fprintf(stderr, "%s failed\n", name);
+        return -1;
+    }
+    if ((uint32_t)count > max_results) {
+        fprintf(stderr, "%s: %d pairs overflow the %u-slot result buffer\n",
+                name, count, max_results);
+        return -1;
+    }
+    if (verify_join_results(R, num_tuples, S, num_tuples, results, count) != 0) {
+        fprintf(stderr, "%s returned the wrong pairs\n", name);
+        return -1;
+    }
+    return 0;
+}
+
+// ============================================================================
 // Test Functions
 // ============================================================================
 
 /**
  * @brief Test 1: Correctness Verification
- * * Verifies that the GPU INLJ produces the same number of results
- * as a CPU-based reference implementation.
+ * * Verifies that both GPU joins return exactly the (r_id, s_id) pairs
+ * of a CPU reference join.
  */
 int test_correctness(uint32_t num_tuples, float overlap_pct) {
     printf("\n");
@@ -95,25 +133,24 @@ int test_correctness(uint32_t num_tuples, float overlap_pct) {
         return -1;
     }
     
-    // Run GPU INLJ
-    printf("Running GPU Index Nested-Loop Join...\n");
-    PerformanceMetrics metrics;
-    int gpu_result_count = gpu_index_nested_loop_join(
-        R, num_tuples, S, num_tuples, &index,
-        results, max_results, &metrics
-    );
+    PerformanceMetrics inlj_metrics, hash_metrics;
+    memset(&inlj_metrics, 0, sizeof(inlj_metrics));
+    memset(&hash_metrics, 0, sizeof(hash_metrics));
     
-    // Verify with CPU
-    printf("Verifying with CPU implementation...\n");
-    uint32_t cpu_result_count = verify_join_cpu(R, num_tuples, S, num_tuples);
+    printf("Running GPU Index Nested-Loop Join and checking its pairs...\n");
+    int inlj_ok = run_join(R, S, num_tuples, &index, results, max_results, &inlj_metrics) == 0;
+    printf("Running GPU Hash Join and checking its pairs...\n");
+    int hash_ok = run_join(R, S, num_tuples, NULL, results, max_results, &hash_metrics) == 0;
     
     // Report results
     printf("\nResults:\n");
-    printf("  GPU INLJ results:  %d\n", gpu_result_count);
-    printf("  CPU verification:  %u\n", cpu_result_count);
-    printf("  Expected:          ~%u\n", expected_results);
+    printf("  GPU INLJ pairs:    %u (%s)\n", inlj_metrics.num_results,
+           inlj_ok ? "match the CPU reference" : "WRONG");
+    printf("  GPU hash pairs:    %u (%s)\n", hash_metrics.num_results,
+           hash_ok ? "match the CPU reference" : "WRONG");
+    printf("  Expected:          %u\n", expected_results);
     
-    int success = (gpu_result_count >= 0 && gpu_result_count == (int)cpu_result_count);
+    int success = inlj_ok && hash_ok;
     printf("\n  TEST %s\n", success ? "PASSED ✓" : "FAILED ✗");
     
     // Cleanup
@@ -188,39 +225,26 @@ int test_performance_comparison(uint32_t num_tuples, float overlap_pct) {
     
     // Run GPU INLJ
     printf("Running GPU Index Nested-Loop Join...\n");
-    PerformanceMetrics inlj_metrics;
+    PerformanceMetrics inlj_metrics, hash_metrics;
     memset(&inlj_metrics, 0, sizeof(inlj_metrics));
-    inlj_metrics.index_build_time_ms = index_time;
-    
-    int status = 0;
-    if (gpu_index_nested_loop_join(
-            R, num_tuples, S, num_tuples, &index,
-            results, max_results, &inlj_metrics) < 0) {
-        fprintf(stderr, "GPU INLJ failed\n");
-        status = -1;
-    }
-    inlj_metrics.total_time_ms += index_time;
-
-    // Run GPU Hash Join baseline
-    PerformanceMetrics hash_metrics;
     memset(&hash_metrics, 0, sizeof(hash_metrics));
-
+    
+    int status = run_join(R, S, num_tuples, &index, results, max_results, &inlj_metrics);
+    inlj_metrics.index_build_time_ms = index_time;
+    inlj_metrics.total_time_ms += index_time;
+    
     if (status == 0) {
         print_metrics(&inlj_metrics, "Index Nested-Loop Join");
         printf("Running GPU Hash Join (baseline)...\n");
-        if (gpu_hash_join_baseline(
-                R, num_tuples, S, num_tuples,
-                results, max_results, &hash_metrics) < 0) {
-            fprintf(stderr, "GPU hash join failed\n");
-            status = -1;
-        }
+        status = run_join(R, S, num_tuples, NULL, results, max_results, &hash_metrics);
     }
-
+    
     if (status == 0) {
         print_metrics(&hash_metrics, "Hash Join (Baseline)");
         print_comparison(&inlj_metrics, &hash_metrics);
+        printf(" Both joins returned exactly the CPU reference pairs.\n");
     }
-
+    
     // Cleanup
     free(R);
     free(S);
@@ -228,7 +252,7 @@ int test_performance_comparison(uint32_t num_tuples, float overlap_pct) {
     free_btree_index(&index);
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
-
+    
     return status;
 }
 
@@ -245,7 +269,7 @@ int test_scalability() {
     
     float overlap_pct = 50.0f;
     int status = 0;
-
+    
     printf("\nData Size (tuples) | INLJ Time (ms) | Hash Time (ms) | Speedup\n");
     printf("-------------------|----------------|----------------|--------\n");
     
@@ -305,31 +329,19 @@ int test_scalability() {
             cudaEventSynchronize(stop);
             cudaEventElapsedTime(&index_time, start, stop);
             
-            inlj_metrics.index_build_time_ms = index_time;
-            
-            if (gpu_index_nested_loop_join(
-                    R, num_tuples, S, num_tuples, &index,
-                    results, max_results, &inlj_metrics) < 0 ||
-                gpu_hash_join_baseline(
-                    R, num_tuples, S, num_tuples,
-                    results, max_results, &hash_metrics) < 0) {
-                printf("%18u | FAILED (CUDA error)\n", num_tuples);
+            if (run_join(R, S, num_tuples, &index, results, max_results, &inlj_metrics) == 0 &&
+                run_join(R, S, num_tuples, NULL, results, max_results, &hash_metrics) == 0) {
+                inlj_metrics.index_build_time_ms = index_time;
+                inlj_metrics.total_time_ms += index_time;
+                float speedup = hash_metrics.total_time_ms / inlj_metrics.total_time_ms;
+                
+                printf("%18u | %14.2f | %14.2f | %6.2fx\n",
+                       num_tuples, inlj_metrics.total_time_ms,
+                       hash_metrics.total_time_ms, speedup);
+            } else {
+                printf("%18u | FAILED\n", num_tuples);
                 status = -1;
-                free_btree_index(&index);
-                cudaEventDestroy(start);
-                cudaEventDestroy(stop);
-                free(R);
-                free(S);
-                free(results);
-                continue;
             }
-            inlj_metrics.total_time_ms += index_time;
-            
-            float speedup = hash_metrics.total_time_ms / inlj_metrics.total_time_ms;
-            
-            printf("%18u | %14.2f | %14.2f | %6.2fx\n",
-                   num_tuples, inlj_metrics.total_time_ms, 
-                   hash_metrics.total_time_ms, speedup);
             
             free_btree_index(&index);
         } else {
@@ -342,7 +354,7 @@ int test_scalability() {
         free(S);
         free(results);
     }
-
+    
     return status;
 }
 
@@ -359,7 +371,7 @@ int test_selectivity() {
     
     uint32_t num_tuples = 1000000; // 1M tuples
     int status = 0;
-
+    
     printf("\nSelectivity (%%) | INLJ Time (ms) | Hash Time (ms) | Results\n");
     printf("----------------|----------------|----------------|--------\n");
     
@@ -408,29 +420,18 @@ int test_selectivity() {
             cudaEventSynchronize(stop);
             cudaEventElapsedTime(&index_time, start, stop);
             
-            inlj_metrics.index_build_time_ms = index_time;
-            
-            if (gpu_index_nested_loop_join(
-                    R, num_tuples, S, num_tuples, &index,
-                    results, max_results, &inlj_metrics) < 0 ||
-                gpu_hash_join_baseline(
-                    R, num_tuples, S, num_tuples,
-                    results, max_results, &hash_metrics) < 0) {
-                printf("%15.1f | FAILED (CUDA error)\n", overlap_pct);
+            if (run_join(R, S, num_tuples, &index, results, max_results, &inlj_metrics) == 0 &&
+                run_join(R, S, num_tuples, NULL, results, max_results, &hash_metrics) == 0) {
+                inlj_metrics.index_build_time_ms = index_time;
+                inlj_metrics.total_time_ms += index_time;
+                
+                printf("%15.1f | %14.2f | %14.2f | %u\n",
+                       overlap_pct, inlj_metrics.total_time_ms,
+                       hash_metrics.total_time_ms, inlj_metrics.num_results);
+            } else {
+                printf("%15.1f | FAILED\n", overlap_pct);
                 status = -1;
-                free_btree_index(&index);
-                cudaEventDestroy(start);
-                cudaEventDestroy(stop);
-                free(R);
-                free(S);
-                free(results);
-                continue;
             }
-            inlj_metrics.total_time_ms += index_time;
-            
-            printf("%15.1f | %14.2f | %14.2f | %u\n",
-                   overlap_pct, inlj_metrics.total_time_ms,
-                   hash_metrics.total_time_ms, inlj_metrics.num_results);
             
             free_btree_index(&index);
         } else {
@@ -443,7 +444,7 @@ int test_selectivity() {
         free(S);
         free(results);
     }
-
+    
     return status;
 }
 
@@ -471,7 +472,7 @@ int main(int argc, char* argv[]) {
     // Check for CUDA device
     int device_count = 0;
     cudaError_t err = cudaGetDeviceCount(&device_count);
-
+    
     if (err != cudaSuccess || device_count == 0) {
         fprintf(stderr, "Error: No CUDA-capable devices found!\n");
         return 1;
