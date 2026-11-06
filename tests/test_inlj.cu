@@ -100,6 +100,19 @@ static void test_verification_rejects_wrong_missing_and_duplicate_pairs() {
 }
 
 /**
+ * With R or S empty no pair can exist, so only an empty result passes.
+ */
+static void test_verification_of_empty_inputs() {
+    printf("verification of empty inputs\n");
+    Tuple tuples[2] = {{0, 4}, {1, 6}};
+    JoinResult pair = {0, 0};
+    EXPECT(verify_join_results(tuples, 0, tuples, 2, &pair, 0) == 0, "empty R, no pairs should pass");
+    EXPECT(verify_join_results(tuples, 0, tuples, 2, &pair, 1) != 0, "empty R, one pair should fail");
+    EXPECT(verify_join_results(tuples, 2, tuples, 0, &pair, 0) == 0, "empty S, no pairs should pass");
+    EXPECT(verify_join_results(tuples, 2, tuples, 0, &pair, 1) != 0, "empty S, one pair should fail");
+}
+
+/**
  * Probes that miss must be spread over R's key range. Keys above every R key
  * all follow the rightmost root-to-leaf path, which stays cached and keeps
  * warps uniform, so they flatter the B+ tree against the hash join.
@@ -196,6 +209,7 @@ int main() {
 
     test_failed_join_frees_device_memory();
     test_verification_rejects_wrong_missing_and_duplicate_pairs();
+    test_verification_of_empty_inputs();
     test_misses_spread_across_the_key_range();
     test_gpu_joins_return_exact_pairs();
 

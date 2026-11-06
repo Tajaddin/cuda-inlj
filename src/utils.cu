@@ -195,6 +195,8 @@ int verify_join_results(
     const Tuple* S, uint32_t num_S,
     const JoinResult* results, uint32_t num_results
 ) {
+    if (num_R == 0 || num_S == 0) return num_results == 0 ? 0 : -1;  // no pair can exist
+
     uint32_t table_size = num_R * 2;
     uint32_t* hash_keys = (uint32_t*)malloc(table_size * sizeof(uint32_t));
     uint32_t* hash_ids = (uint32_t*)malloc(table_size * sizeof(uint32_t));
