@@ -50,14 +50,15 @@ OBJECTS = $(OBJ_DIR)/btree_index.o \
           $(OBJ_DIR)/utils.o \
           $(OBJ_DIR)/main.o
 
-# Target executable
+# Target executables
 TARGET = $(BIN_DIR)/inlj_test
+TEST_TARGET = $(BIN_DIR)/inlj_unit_tests
 
 # =============================================================================
 # Build Rules
 # =============================================================================
 
-.PHONY: all clean debug run help profile
+.PHONY: all clean debug run help profile test
 
 # Default target
 all: directories $(TARGET)
@@ -81,6 +82,16 @@ $(OBJ_DIR)/utils.o: $(SRC_DIR)/utils.cu include/inlj.h
 
 $(OBJ_DIR)/main.o: $(SRC_DIR)/main.cu include/inlj.h
 	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) -c $< -o $@
+
+$(OBJ_DIR)/test_inlj.o: tests/test_inlj.cu include/inlj.h
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) -c $< -o $@
+
+$(TEST_TARGET): $(OBJ_DIR)/btree_index.o $(OBJ_DIR)/utils.o $(OBJ_DIR)/test_inlj.o
+	$(NVCC) $(NVCC_FLAGS) -o $@ $^
+
+# Unit tests (need an NVIDIA GPU)
+test: directories $(TEST_TARGET)
+	./$(TEST_TARGET)
 
 # Debug build
 debug: NVCC_FLAGS += $(DEBUG_FLAGS)
@@ -132,6 +143,7 @@ help:
 	@echo "  run2       - Run Test 2: Performance comparison"
 	@echo "  run3       - Run Test 3: Scalability analysis"
 	@echo "  run4       - Run Test 4: Selectivity analysis"
+	@echo "  test       - Build and run the unit tests"
 	@echo "  profile    - Profile with nvprof"
 	@echo "  ncu-profile- Profile with Nsight Compute"
 	@echo "  help       - Show this help message"

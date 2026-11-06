@@ -239,27 +239,17 @@ void print_gpu_info();
 
 /**
  * @brief CUDA error checking macro
+ * * On failure, prints the error and jumps to the enclosing function's
+ * cleanup label, which frees what was allocated. Declare every variable
+ * the cleanup uses before the first CUDA_TRY.
  */
-#define CUDA_CHECK(call) \
+#define CUDA_TRY(call) \
     do { \
         cudaError_t err = call; \
         if (err != cudaSuccess) { \
             fprintf(stderr, "CUDA Error at %s:%d - %s\n", \
                     __FILE__, __LINE__, cudaGetErrorString(err)); \
-            return -1; \
-        } \
-    } while(0)
-
-/**
- * @brief CUDA error checking macro (void return version)
- */
-#define CUDA_CHECK_VOID(call) \
-    do { \
-        cudaError_t err = call; \
-        if (err != cudaSuccess) { \
-            fprintf(stderr, "CUDA Error at %s:%d - %s\n", \
-                    __FILE__, __LINE__, cudaGetErrorString(err)); \
-            return; \
+            goto cleanup; \
         } \
     } while(0)
 
