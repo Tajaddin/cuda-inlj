@@ -305,10 +305,13 @@ void print_comparison(
 void print_gpu_info() {
     int device;
     cudaDeviceProp prop;
-    
+    int memory_clock_khz = 0;
+
     cudaGetDevice(&device);
     cudaGetDeviceProperties(&prop, device);
-    
+    // cudaDeviceProp::memoryClockRate was removed in CUDA 13.
+    cudaDeviceGetAttribute(&memory_clock_khz, cudaDevAttrMemoryClockRate, device);
+
     printf("\n");
     printf("=============================================================\n");
     printf(" CUDA Device Information\n");
@@ -320,7 +323,7 @@ void print_gpu_info() {
     printf(" Max Threads/Block:    %d\n", prop.maxThreadsPerBlock);
     printf(" Warp Size:            %d\n", prop.warpSize);
     printf(" Multiprocessors:      %d\n", prop.multiProcessorCount);
-    printf(" Memory Clock Rate:    %.2f GHz\n", prop.memoryClockRate / 1e6);
+    printf(" Memory Clock Rate:    %.2f GHz\n", memory_clock_khz / 1e6);
     printf(" Memory Bus Width:     %d bits\n", prop.memoryBusWidth);
     printf("=============================================================\n");
 }

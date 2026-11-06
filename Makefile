@@ -18,11 +18,15 @@ CXX = g++
 #   - sm_86: Ampere (RTX 30xx mobile)
 #   - sm_89: Ada Lovelace (RTX 40xx)
 #   - sm_90: Hopper (H100)
+# The compute_86 PTX lets newer GPUs JIT-compile the kernels; without it a
+# launch on them fails. CUDA 13 dropped sm_60 and sm_70, so build there with
+# e.g. make CUDA_ARCH="-gencode arch=compute_89,code=sm_89"
 CUDA_ARCH = -gencode arch=compute_60,code=sm_60 \
             -gencode arch=compute_70,code=sm_70 \
             -gencode arch=compute_75,code=sm_75 \
             -gencode arch=compute_80,code=sm_80 \
-            -gencode arch=compute_86,code=sm_86
+            -gencode arch=compute_86,code=sm_86 \
+            -gencode arch=compute_86,code=compute_86
 
 # Compiler flags
 NVCC_FLAGS = -O3 -std=c++11 $(CUDA_ARCH) -Xcompiler -Wall
