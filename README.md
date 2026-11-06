@@ -4,7 +4,7 @@ GPU-accelerated Index Nested-Loop Join with a B+ Tree index, written in CUDA C++
 
 ## Results
 
-Measured on an RTX 4060 (8 GB, sm_89) under WSL2 Ubuntu 24.04, built with CUDA 13.5 for sm_89. Every join time is the median of 11 runs after one warm-up run; the index build is a single CPU run. Three full runs of `./bin/inlj_test` agreed to within 7% on every kernel time and within 24% on the end-to-end totals, which also include allocation, transfers and the CPU index build; the numbers below are from the first. Treat the totals and the end-to-end ratio as indicative: each includes one CPU run of the index build, which moves with host load far more than the kernel times do.
+Measured on an RTX 4060 (8 GB, sm_89) under WSL2 Ubuntu 24.04, built with CUDA 13.5 for sm_89. Every join time is the median of 11 runs after one warm-up run; the index build is a single CPU run. Three full runs of `./bin/inlj_test` agreed to within 7% on every kernel time and within 24% on the end-to-end totals, which also include allocation, transfers and the CPU index build; the numbers below are from the first. Treat the totals and the end-to-end ratio as indicative: every INLJ total includes one CPU run of the index build, which moves with host load far more than the kernel times do.
 
 | Metric | Value |
 |---|---|
