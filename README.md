@@ -4,13 +4,13 @@ GPU-accelerated Index Nested-Loop Join with a B+ Tree index, written in CUDA C++
 
 ## Results
 
-Measured on an RTX 4060 (8 GB, sm_89) under WSL2 Ubuntu 24.04, built with CUDA 13.5 for sm_89. Every join time is the median of 11 runs after one warm-up run; the index build is a single CPU run. Three full runs of `./bin/inlj_test` agreed to within 7% on every kernel time and within 24% on the end-to-end totals, which also include allocation, transfers and the CPU index build; the numbers below are from the first.
+Measured on an RTX 4060 (8 GB, sm_89) under WSL2 Ubuntu 24.04, built with CUDA 13.5 for sm_89. Every join time is the median of 11 runs after one warm-up run; the index build is a single CPU run. Three full runs of `./bin/inlj_test` agreed to within 7% on every kernel time and within 24% on the end-to-end totals, which also include allocation, transfers and the CPU index build; the numbers below are from the first. Treat the totals and the end-to-end ratio as indicative: each includes one CPU run of the index build, which moves with host load far more than the kernel times do.
 
 | Metric | Value |
 |---|---|
 | Max dataset | 10M tuples per table |
 | Probe kernel, 1M x 1M, 50% overlap | INLJ 0.532 ms, hash join 0.167 ms: the hash probe is 3.2x faster |
-| End to end, including the host-side index build | hash join is ~21x faster (10M: 1,147 ms vs 55 ms) |
+| End to end, including the host-side index build | hash join is ~21x faster (10M: 1,147 ms vs 55 ms); indicative, see above |
 | Correctness | every test checks both joins' (r_id, s_id) pairs against a CPU reference join |
 | Selectivity sweep | 10, 25, 50, 75, 100 percent overlap |
 | Scalability sweep | 100K, 500K, 1M, 2M, 5M, 10M tuples |
