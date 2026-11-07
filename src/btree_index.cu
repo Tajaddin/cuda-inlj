@@ -471,90 +471,82 @@ int gpu_index_nested_loop_join(
     JoinResult* h_results, uint32_t max_results,
     PerformanceMetrics* metrics
 ) {
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    
-    // Device pointers
+    // Everything CUDA_TRY can jump over is declared before the first call.
+    cudaEvent_t start = NULL, stop = NULL;
     Tuple* d_S = NULL;
     BTreeNode* d_nodes = NULL;
     JoinResult* d_results = NULL;
     uint32_t* d_result_count = NULL;
-    
     float transfer_time = 0, kernel_time = 0, result_time = 0;
-    
+    uint32_t result_count = 0, results_to_copy = 0;
+    int num_blocks = min((int)((num_S + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK), 65535);
+    int status = -1;
+
+    CUDA_TRY(cudaEventCreate(&start));
+    CUDA_TRY(cudaEventCreate(&stop));
+
     // ========================================================================
     // Allocate and transfer data to GPU
     // ========================================================================
-    
-    cudaEventRecord(start);
-    
-    // Allocate device memory
-    CUDA_CHECK(cudaMalloc(&d_S, num_S * sizeof(Tuple)));
-    CUDA_CHECK(cudaMalloc(&d_nodes, h_index->num_nodes * sizeof(BTreeNode)));
-    CUDA_CHECK(cudaMalloc(&d_results, max_results * sizeof(JoinResult)));
-    CUDA_CHECK(cudaMalloc(&d_result_count, sizeof(uint32_t)));
-    
-    // Transfer data
-    CUDA_CHECK(cudaMemcpy(d_S, h_S, num_S * sizeof(Tuple), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_nodes, h_index->nodes, 
-                          h_index->num_nodes * sizeof(BTreeNode), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemset(d_result_count, 0, sizeof(uint32_t)));
-    
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&transfer_time, start, stop);
-    
+
+    CUDA_TRY(cudaEventRecord(start));
+
+    CUDA_TRY(cudaMalloc(&d_S, num_S * sizeof(Tuple)));
+    CUDA_TRY(cudaMalloc(&d_nodes, h_index->num_nodes * sizeof(BTreeNode)));
+    CUDA_TRY(cudaMalloc(&d_results, max_results * sizeof(JoinResult)));
+    CUDA_TRY(cudaMalloc(&d_result_count, sizeof(uint32_t)));
+
+    CUDA_TRY(cudaMemcpy(d_S, h_S, num_S * sizeof(Tuple), cudaMemcpyHostToDevice));
+    CUDA_TRY(cudaMemcpy(d_nodes, h_index->nodes,
+                        h_index->num_nodes * sizeof(BTreeNode), cudaMemcpyHostToDevice));
+    CUDA_TRY(cudaMemset(d_result_count, 0, sizeof(uint32_t)));
+
+    CUDA_TRY(cudaEventRecord(stop));
+    CUDA_TRY(cudaEventSynchronize(stop));
+    CUDA_TRY(cudaEventElapsedTime(&transfer_time, start, stop));
+
     // ========================================================================
     // Execute join kernel
     // ========================================================================
-    
-    int num_blocks = (num_S + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-    num_blocks = min(num_blocks, 65535); // Limit grid size
-    
-    cudaEventRecord(start);
-    
+
+    CUDA_TRY(cudaEventRecord(start));
     inlj_kernel<<<num_blocks, THREADS_PER_BLOCK>>>(
         d_S, num_S, d_nodes, h_index->root_idx,
         d_results, d_result_count, max_results
     );
-    
-    CUDA_CHECK(cudaDeviceSynchronize());
-    
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&kernel_time, start, stop);
-    
+    CUDA_TRY(cudaGetLastError());
+    CUDA_TRY(cudaEventRecord(stop));
+    CUDA_TRY(cudaEventSynchronize(stop));
+    CUDA_TRY(cudaEventElapsedTime(&kernel_time, start, stop));
+
     // ========================================================================
     // Transfer results back
     // ========================================================================
-    
-    cudaEventRecord(start);
-    
-    uint32_t result_count;
-    CUDA_CHECK(cudaMemcpy(&result_count, d_result_count, sizeof(uint32_t), 
-                          cudaMemcpyDeviceToHost));
-    
-    uint32_t results_to_copy = min(result_count, max_results);
-    CUDA_CHECK(cudaMemcpy(h_results, d_results, results_to_copy * sizeof(JoinResult),
-                          cudaMemcpyDeviceToHost));
-    
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&result_time, start, stop);
-    
-    // ========================================================================
-    // Cleanup and return
-    // ========================================================================
-    
+
+    CUDA_TRY(cudaEventRecord(start));
+    CUDA_TRY(cudaMemcpy(&result_count, d_result_count, sizeof(uint32_t),
+                        cudaMemcpyDeviceToHost));
+    results_to_copy = min(result_count, max_results);
+    CUDA_TRY(cudaMemcpy(h_results, d_results, results_to_copy * sizeof(JoinResult),
+                        cudaMemcpyDeviceToHost));
+    CUDA_TRY(cudaEventRecord(stop));
+    CUDA_TRY(cudaEventSynchronize(stop));
+    CUDA_TRY(cudaEventElapsedTime(&result_time, start, stop));
+
+    status = 0;
+
+cleanup:
     cudaFree(d_S);
     cudaFree(d_nodes);
     cudaFree(d_results);
     cudaFree(d_result_count);
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
-    
-    // Record metrics
+    if (start) cudaEventDestroy(start);
+    if (stop) cudaEventDestroy(stop);
+    if (status != 0) {
+        cudaGetLastError(); // clear it, or the next launch check reports it again
+        return -1;
+    }
+
     if (metrics) {
         metrics->data_transfer_time_ms = transfer_time;
         metrics->join_kernel_time_ms = kernel_time;
@@ -562,7 +554,7 @@ int gpu_index_nested_loop_join(
         metrics->total_time_ms = transfer_time + kernel_time + result_time;
         metrics->num_results = result_count;
     }
-    
+
     return result_count;
 }
 
@@ -575,116 +567,105 @@ int gpu_hash_join_baseline(
     JoinResult* h_results, uint32_t max_results,
     PerformanceMetrics* metrics
 ) {
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    
-    // Device pointers
+    // Everything CUDA_TRY can jump over is declared before the first call.
+    cudaEvent_t start = NULL, stop = NULL;
     Tuple* d_R = NULL;
     Tuple* d_S = NULL;
     uint32_t* d_hash_table = NULL;
     uint32_t* d_hash_values = NULL;
     JoinResult* d_results = NULL;
     uint32_t* d_result_count = NULL;
-    
     float build_time = 0, transfer_time = 0, kernel_time = 0, result_time = 0;
-    
+    uint32_t result_count = 0, results_to_copy = 0;
+
     // Hash table size (load factor ~0.5)
     uint32_t table_size = num_R * 2;
-    
+    int num_blocks_build = min((int)((num_R + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK), 65535);
+    int num_blocks_probe = min((int)((num_S + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK), 65535);
+    int status = -1;
+
+    CUDA_TRY(cudaEventCreate(&start));
+    CUDA_TRY(cudaEventCreate(&stop));
+
     // ========================================================================
     // Allocate and transfer data to GPU
     // ========================================================================
-    
-    cudaEventRecord(start);
-    
-    CUDA_CHECK(cudaMalloc(&d_R, num_R * sizeof(Tuple)));
-    CUDA_CHECK(cudaMalloc(&d_S, num_S * sizeof(Tuple)));
-    CUDA_CHECK(cudaMalloc(&d_hash_table, table_size * sizeof(uint32_t)));
-    CUDA_CHECK(cudaMalloc(&d_hash_values, table_size * sizeof(uint32_t)));
-    CUDA_CHECK(cudaMalloc(&d_results, max_results * sizeof(JoinResult)));
-    CUDA_CHECK(cudaMalloc(&d_result_count, sizeof(uint32_t)));
-    
-    CUDA_CHECK(cudaMemcpy(d_R, h_R, num_R * sizeof(Tuple), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_S, h_S, num_S * sizeof(Tuple), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemset(d_hash_table, 0xFF, table_size * sizeof(uint32_t))); // INVALID_INDEX
-    CUDA_CHECK(cudaMemset(d_result_count, 0, sizeof(uint32_t)));
-    
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&transfer_time, start, stop);
-    
+
+    CUDA_TRY(cudaEventRecord(start));
+
+    CUDA_TRY(cudaMalloc(&d_R, num_R * sizeof(Tuple)));
+    CUDA_TRY(cudaMalloc(&d_S, num_S * sizeof(Tuple)));
+    CUDA_TRY(cudaMalloc(&d_hash_table, table_size * sizeof(uint32_t)));
+    CUDA_TRY(cudaMalloc(&d_hash_values, table_size * sizeof(uint32_t)));
+    CUDA_TRY(cudaMalloc(&d_results, max_results * sizeof(JoinResult)));
+    CUDA_TRY(cudaMalloc(&d_result_count, sizeof(uint32_t)));
+
+    CUDA_TRY(cudaMemcpy(d_R, h_R, num_R * sizeof(Tuple), cudaMemcpyHostToDevice));
+    CUDA_TRY(cudaMemcpy(d_S, h_S, num_S * sizeof(Tuple), cudaMemcpyHostToDevice));
+    CUDA_TRY(cudaMemset(d_hash_table, 0xFF, table_size * sizeof(uint32_t))); // INVALID_INDEX
+    CUDA_TRY(cudaMemset(d_result_count, 0, sizeof(uint32_t)));
+
+    CUDA_TRY(cudaEventRecord(stop));
+    CUDA_TRY(cudaEventSynchronize(stop));
+    CUDA_TRY(cudaEventElapsedTime(&transfer_time, start, stop));
+
     // ========================================================================
     // Build hash table
     // ========================================================================
-    
-    int num_blocks_build = (num_R + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-    num_blocks_build = min(num_blocks_build, 65535);
-    
-    cudaEventRecord(start);
-    
+
+    CUDA_TRY(cudaEventRecord(start));
     build_hash_table_kernel<<<num_blocks_build, THREADS_PER_BLOCK>>>(
         d_R, num_R, d_hash_table, d_hash_values, table_size
     );
-    
-    CUDA_CHECK(cudaDeviceSynchronize());
-    
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&build_time, start, stop);
-    
+    CUDA_TRY(cudaGetLastError());
+    CUDA_TRY(cudaEventRecord(stop));
+    CUDA_TRY(cudaEventSynchronize(stop));
+    CUDA_TRY(cudaEventElapsedTime(&build_time, start, stop));
+
     // ========================================================================
     // Probe phase
     // ========================================================================
-    
-    int num_blocks_probe = (num_S + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-    num_blocks_probe = min(num_blocks_probe, 65535);
-    
-    cudaEventRecord(start);
-    
+
+    CUDA_TRY(cudaEventRecord(start));
     hash_join_probe_kernel<<<num_blocks_probe, THREADS_PER_BLOCK>>>(
         d_S, num_S, d_hash_table, d_hash_values, table_size,
         d_results, d_result_count, max_results
     );
-    
-    CUDA_CHECK(cudaDeviceSynchronize());
-    
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&kernel_time, start, stop);
-    
+    CUDA_TRY(cudaGetLastError());
+    CUDA_TRY(cudaEventRecord(stop));
+    CUDA_TRY(cudaEventSynchronize(stop));
+    CUDA_TRY(cudaEventElapsedTime(&kernel_time, start, stop));
+
     // ========================================================================
     // Transfer results back
     // ========================================================================
-    
-    cudaEventRecord(start);
-    
-    uint32_t result_count;
-    CUDA_CHECK(cudaMemcpy(&result_count, d_result_count, sizeof(uint32_t),
-                          cudaMemcpyDeviceToHost));
-    
-    uint32_t results_to_copy = min(result_count, max_results);
-    CUDA_CHECK(cudaMemcpy(h_results, d_results, results_to_copy * sizeof(JoinResult),
-                          cudaMemcpyDeviceToHost));
-    
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&result_time, start, stop);
-    
-    // ========================================================================
-    // Cleanup and return
-    // ========================================================================
-    
+
+    CUDA_TRY(cudaEventRecord(start));
+    CUDA_TRY(cudaMemcpy(&result_count, d_result_count, sizeof(uint32_t),
+                        cudaMemcpyDeviceToHost));
+    results_to_copy = min(result_count, max_results);
+    CUDA_TRY(cudaMemcpy(h_results, d_results, results_to_copy * sizeof(JoinResult),
+                        cudaMemcpyDeviceToHost));
+    CUDA_TRY(cudaEventRecord(stop));
+    CUDA_TRY(cudaEventSynchronize(stop));
+    CUDA_TRY(cudaEventElapsedTime(&result_time, start, stop));
+
+    status = 0;
+
+cleanup:
     cudaFree(d_R);
     cudaFree(d_S);
     cudaFree(d_hash_table);
     cudaFree(d_hash_values);
     cudaFree(d_results);
     cudaFree(d_result_count);
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
-    
-    // Record metrics
+    if (start) cudaEventDestroy(start);
+    if (stop) cudaEventDestroy(stop);
+    if (status != 0) {
+        cudaGetLastError(); // clear it, or the next launch check reports it again
+        return -1;
+    }
+
     if (metrics) {
         metrics->index_build_time_ms = build_time;
         metrics->data_transfer_time_ms = transfer_time;
@@ -693,6 +674,6 @@ int gpu_hash_join_baseline(
         metrics->total_time_ms = transfer_time + build_time + kernel_time + result_time;
         metrics->num_results = result_count;
     }
-    
+
     return result_count;
 }

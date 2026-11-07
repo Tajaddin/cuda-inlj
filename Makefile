@@ -18,11 +18,20 @@ CXX = g++
 #   - sm_86: Ampere (RTX 30xx mobile)
 #   - sm_89: Ada Lovelace (RTX 40xx)
 #   - sm_90: Hopper (H100)
-CUDA_ARCH = -gencode arch=compute_60,code=sm_60 \
-            -gencode arch=compute_70,code=sm_70 \
+# The sm_86 machine code also runs on the other 8.x GPUs, such as Ada (sm_89);
+# GPUs of compute capability 9.0 and newer (Hopper, Blackwell) JIT-compile the
+# compute_86 PTX. CUDA 13 dropped sm_60 and sm_70, so only an older nvcc builds
+# them. To build for one GPU: make CUDA_ARCH="-gencode arch=compute_89,code=sm_89"
+NVCC_MAJOR := $(shell $(NVCC) --version 2>/dev/null | sed -n 's/.*release \([0-9]*\)\..*/\1/p')
+ifeq ($(shell [ "$(NVCC_MAJOR)" -lt 13 ] 2>/dev/null && echo yes),yes)
+PRE_TURING_ARCH = -gencode arch=compute_60,code=sm_60 \
+                  -gencode arch=compute_70,code=sm_70
+endif
+CUDA_ARCH = $(PRE_TURING_ARCH) \
             -gencode arch=compute_75,code=sm_75 \
             -gencode arch=compute_80,code=sm_80 \
-            -gencode arch=compute_86,code=sm_86
+            -gencode arch=compute_86,code=sm_86 \
+            -gencode arch=compute_86,code=compute_86
 
 # Compiler flags
 NVCC_FLAGS = -O3 -std=c++11 $(CUDA_ARCH) -Xcompiler -Wall
@@ -46,14 +55,15 @@ OBJECTS = $(OBJ_DIR)/btree_index.o \
           $(OBJ_DIR)/utils.o \
           $(OBJ_DIR)/main.o
 
-# Target executable
+# Target executables
 TARGET = $(BIN_DIR)/inlj_test
+TEST_TARGET = $(BIN_DIR)/inlj_unit_tests
 
 # =============================================================================
 # Build Rules
 # =============================================================================
 
-.PHONY: all clean debug run help profile
+.PHONY: all clean debug run help profile test
 
 # Default target
 all: directories $(TARGET)
@@ -77,6 +87,16 @@ $(OBJ_DIR)/utils.o: $(SRC_DIR)/utils.cu include/inlj.h
 
 $(OBJ_DIR)/main.o: $(SRC_DIR)/main.cu include/inlj.h
 	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) -c $< -o $@
+
+$(OBJ_DIR)/test_inlj.o: tests/test_inlj.cu include/inlj.h
+	$(NVCC) $(NVCC_FLAGS) $(INCLUDES) -c $< -o $@
+
+$(TEST_TARGET): $(OBJ_DIR)/btree_index.o $(OBJ_DIR)/utils.o $(OBJ_DIR)/test_inlj.o
+	$(NVCC) $(NVCC_FLAGS) -o $@ $^
+
+# Unit tests (need an NVIDIA GPU)
+test: directories $(TEST_TARGET)
+	./$(TEST_TARGET)
 
 # Debug build
 debug: NVCC_FLAGS += $(DEBUG_FLAGS)
@@ -128,6 +148,7 @@ help:
 	@echo "  run2       - Run Test 2: Performance comparison"
 	@echo "  run3       - Run Test 3: Scalability analysis"
 	@echo "  run4       - Run Test 4: Selectivity analysis"
+	@echo "  test       - Build and run the unit tests"
 	@echo "  profile    - Profile with nvprof"
 	@echo "  ncu-profile- Profile with Nsight Compute"
 	@echo "  help       - Show this help message"

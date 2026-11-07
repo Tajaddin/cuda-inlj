@@ -75,6 +75,10 @@ void generate_test_data(Tuple* tuples, uint32_t num_tuples, uint32_t seed) {
  * @brief Generate test data with controlled overlap for join testing
  * * Creates two tables where a specified percentage of keys match.
  * This allows testing join performance at different selectivities.
+ * R gets the even keys 0, 2, ..., 2*(num_R-1); the S keys that miss are
+ * distinct odd keys from the same range, so a missed probe walks a random
+ * root-to-leaf path like a hit does. (Misses above every R key would all
+ * follow the rightmost path, which stays cached.)
  * * @param R Array for table R tuples (inner/indexed table)
  * @param num_R Number of tuples in R
  * @param S Array for table S tuples (outer table)
@@ -92,7 +96,7 @@ void generate_join_test_data(
     
     uint32_t state = seed;
     
-    // Generate R with unique keys in range [0, num_R-1]
+    // Generate R with unique even keys in range [0, 2*num_R-2]
     uint32_t* r_keys = (uint32_t*)malloc(num_R * sizeof(uint32_t));
     if (!r_keys) {
         fprintf(stderr, "Failed to allocate memory for R keys\n");
@@ -106,7 +110,7 @@ void generate_join_test_data(
     
     for (uint32_t i = 0; i < num_R; i++) {
         R[i].id = i;
-        R[i].key = r_keys[i];
+        R[i].key = 2 * r_keys[i];
     }
     
     // Generate S with controlled overlap
@@ -138,14 +142,28 @@ void generate_join_test_data(
     for (uint32_t i = 0; i < num_matching; i++) {
         // Pick a random key from R
         uint32_t r_idx = r_key_indices[i % num_R];
-        s_keys[i] = r_keys[r_idx];
+        s_keys[i] = 2 * r_keys[r_idx];
     }
     
-    // Then, add non-matching keys (keys not in R)
-    uint32_t non_match_key = num_R; // Start from keys outside R's range
-    for (uint32_t i = num_matching; i < num_S; i++) {
-        s_keys[i] = non_match_key++;
+    // Then, add non-matching keys: distinct odd keys drawn from R's range
+    // (beyond it only if S needs more misses than R has gaps)
+    uint32_t num_odd = num_non_matching > num_R ? num_non_matching : num_R;
+    uint32_t* odd_slots = (uint32_t*)malloc(num_odd * sizeof(uint32_t));
+    if (!odd_slots) {
+        free(r_keys);
+        free(s_keys);
+        free(r_key_indices);
+        fprintf(stderr, "Failed to allocate memory for non-matching keys\n");
+        return;
     }
+    for (uint32_t i = 0; i < num_odd; i++) {
+        odd_slots[i] = i;
+    }
+    shuffle_array(odd_slots, num_odd, seed + 3);
+    for (uint32_t i = 0; i < num_non_matching; i++) {
+        s_keys[num_matching + i] = 2 * odd_slots[i] + 1;
+    }
+    free(odd_slots);
     
     // Shuffle S keys
     shuffle_array(s_keys, num_S, seed + 2);
@@ -166,27 +184,29 @@ void generate_join_test_data(
 // ============================================================================
 
 /**
- * @brief Verify join results using CPU-based nested loop join
- * * Performs a simple O(n*m) nested loop join to count matching pairs.
- * Used to verify correctness of GPU join results.
+ * @brief Check join results against a CPU reference join
+ * * Builds a hash table of R on the CPU, works out which R tuple (if any)
+ * each S tuple must join with, and checks that the results hold every one
+ * of those (r_id, s_id) pairs exactly once and nothing else. S ids must be
+ * 0..num_S-1, as the generators produce them.
  */
-uint32_t verify_join_cpu(
+int verify_join_results(
     const Tuple* R, uint32_t num_R,
-    const Tuple* S, uint32_t num_S
+    const Tuple* S, uint32_t num_S,
+    const JoinResult* results, uint32_t num_results
 ) {
-    if (!R || !S || num_R == 0 || num_S == 0) return 0;
-    
-    // Build a hash set of R keys for O(n+m) verification
-    // Using a simple hash table with linear probing
+    if (num_R == 0 || num_S == 0) return num_results == 0 ? 0 : -1;  // no pair can exist
+
     uint32_t table_size = num_R * 2;
     uint32_t* hash_keys = (uint32_t*)malloc(table_size * sizeof(uint32_t));
     uint32_t* hash_ids = (uint32_t*)malloc(table_size * sizeof(uint32_t));
+    uint32_t* expected = (uint32_t*)malloc(num_S * sizeof(uint32_t)); // r_id per s_id
+    uint8_t* seen = (uint8_t*)calloc(num_S, 1);
+    int status = -1;
     
-    if (!hash_keys || !hash_ids) {
-        if (hash_keys) free(hash_keys);
-        if (hash_ids) free(hash_ids);
+    if (!hash_keys || !hash_ids || !expected || !seen) {
         fprintf(stderr, "Failed to allocate memory for verification\n");
-        return 0;
+        goto done;
     }
     
     memset(hash_keys, 0xFF, table_size * sizeof(uint32_t));
@@ -203,27 +223,59 @@ uint32_t verify_join_cpu(
         hash_ids[hash_idx] = R[i].id;
     }
     
-    // Probe with S
-    uint32_t match_count = 0;
-    for (uint32_t i = 0; i < num_S; i++) {
-        uint32_t key = S[i].key;
-        uint32_t hash_idx = key % table_size;
-        uint32_t start_idx = hash_idx;
-        
-        while (hash_keys[hash_idx] != INVALID_INDEX) {
-            if (hash_keys[hash_idx] == key) {
-                match_count++;
-                break;
+    {
+        // Expected partner of every S tuple
+        uint32_t expected_count = 0;
+        for (uint32_t i = 0; i < num_S; i++) {
+            if (S[i].id >= num_S) {
+                fprintf(stderr, "Verification needs S ids in 0..%u\n", num_S - 1);
+                goto done;
             }
-            hash_idx = (hash_idx + 1) % table_size;
-            if (hash_idx == start_idx) break;
+            uint32_t key = S[i].key;
+            uint32_t hash_idx = key % table_size;
+            uint32_t r_id = INVALID_INDEX;
+            
+            while (hash_keys[hash_idx] != INVALID_INDEX) {
+                if (hash_keys[hash_idx] == key) {
+                    r_id = hash_ids[hash_idx];
+                    break;
+                }
+                hash_idx = (hash_idx + 1) % table_size;
+            }
+            expected[S[i].id] = r_id;
+            if (r_id != INVALID_INDEX) expected_count++;
+        }
+        
+        // Compare with the returned pairs
+        uint32_t wrong = 0, duplicate = 0;
+        for (uint32_t i = 0; i < num_results; i++) {
+            uint32_t s_id = results[i].s_id;
+            if (s_id >= num_S || expected[s_id] == INVALID_INDEX ||
+                expected[s_id] != results[i].r_id) {
+                wrong++;
+            } else if (seen[s_id]) {
+                duplicate++;
+            } else {
+                seen[s_id] = 1;
+            }
+        }
+        uint32_t missing = expected_count - (num_results - wrong - duplicate);
+        
+        if (wrong || duplicate || missing) {
+            fprintf(stderr, "Join verification FAILED: %u expected pairs, %u returned "
+                    "(%u wrong, %u duplicate, %u missing)\n",
+                    expected_count, num_results, wrong, duplicate, missing);
+        } else {
+            status = 0;
         }
     }
-    
+
+done:
     free(hash_keys);
     free(hash_ids);
-    
-    return match_count;
+    free(expected);
+    free(seen);
+    return status;
 }
 
 // ============================================================================
@@ -305,9 +357,12 @@ void print_comparison(
 void print_gpu_info() {
     int device;
     cudaDeviceProp prop;
+    int memory_clock_khz = 0;
     
     cudaGetDevice(&device);
     cudaGetDeviceProperties(&prop, device);
+    // cudaDeviceProp::memoryClockRate was removed in CUDA 13.
+    cudaDeviceGetAttribute(&memory_clock_khz, cudaDevAttrMemoryClockRate, device);
     
     printf("\n");
     printf("=============================================================\n");
@@ -320,7 +375,7 @@ void print_gpu_info() {
     printf(" Max Threads/Block:    %d\n", prop.maxThreadsPerBlock);
     printf(" Warp Size:            %d\n", prop.warpSize);
     printf(" Multiprocessors:      %d\n", prop.multiProcessorCount);
-    printf(" Memory Clock Rate:    %.2f GHz\n", prop.memoryClockRate / 1e6);
+    printf(" Memory Clock Rate:    %.2f GHz\n", memory_clock_khz / 1e6);
     printf(" Memory Bus Width:     %d bits\n", prop.memoryBusWidth);
     printf("=============================================================\n");
 }

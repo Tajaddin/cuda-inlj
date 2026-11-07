@@ -204,17 +204,21 @@ void generate_join_test_data(
 );
 
 /**
- * @brief Verify join results using CPU-based nested loop join
- * * Performs a simple nested loop join on CPU to verify GPU results.
+ * @brief Check join results against a CPU reference join
+ * * Every returned (r_id, s_id) pair must be a real match, no pair may
+ * appear twice, and no match may be missing.
  * * @param R Array of table R tuples
  * @param num_R Number of tuples in R
- * @param S Array of table S tuples
+ * @param S Array of table S tuples (ids 0..num_S-1)
  * @param num_S Number of tuples in S
- * @return Number of matching pairs found
+ * @param results Join results to check
+ * @param num_results Number of results
+ * @return 0 if the results are exactly the expected pairs, -1 otherwise
  */
-uint32_t verify_join_cpu(
+int verify_join_results(
     const Tuple* R, uint32_t num_R,
-    const Tuple* S, uint32_t num_S
+    const Tuple* S, uint32_t num_S,
+    const JoinResult* results, uint32_t num_results
 );
 
 /**
@@ -239,27 +243,17 @@ void print_gpu_info();
 
 /**
  * @brief CUDA error checking macro
+ * * On failure, prints the error and jumps to the enclosing function's
+ * cleanup label, which frees what was allocated. Declare every variable
+ * the cleanup uses before the first CUDA_TRY.
  */
-#define CUDA_CHECK(call) \
+#define CUDA_TRY(call) \
     do { \
         cudaError_t err = call; \
         if (err != cudaSuccess) { \
             fprintf(stderr, "CUDA Error at %s:%d - %s\n", \
                     __FILE__, __LINE__, cudaGetErrorString(err)); \
-            return -1; \
-        } \
-    } while(0)
-
-/**
- * @brief CUDA error checking macro (void return version)
- */
-#define CUDA_CHECK_VOID(call) \
-    do { \
-        cudaError_t err = call; \
-        if (err != cudaSuccess) { \
-            fprintf(stderr, "CUDA Error at %s:%d - %s\n", \
-                    __FILE__, __LINE__, cudaGetErrorString(err)); \
-            return; \
+            goto cleanup; \
         } \
     } while(0)
 
